@@ -1,0 +1,208 @@
+services:
+  api:
+    build: ./backend
+    env_file:
+      - ./.env
+    environment:
+      # Service-to-service DSNs (compose network)
+      - POSTGRES_DSN=${POSTGRES_DSN}
+      - REDIS_URL=${REDIS_URL}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS}
+      - KAFKA_CLIENT_ID=${KAFKA_CLIENT_ID}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET}
+      - PLAGCODE_LOG_LEVEL=INFO
+    ports:
+      - "8001:8000"
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+      - minio
+      - kafka-init
+      - minio-init
+    networks:
+      - plagcode-net
+
+  normalizer-worker:
+    build: ./backend
+    env_file:
+      - ./.env
+    environment:
+      - POSTGRES_DSN=${POSTGRES_DSN}
+      - REDIS_URL=${REDIS_URL}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS}
+      - KAFKA_CLIENT_ID=${KAFKA_CLIENT_ID}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET}
+      - PLAGCODE_LOG_LEVEL=INFO
+      - WORKER_GROUP_ID=normalizer-worker
+    command: ["python", "-m", "app.workers.normalizer_worker"]
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+      - minio
+      - kafka-init
+      - minio-init
+    networks:
+      - plagcode-net
+
+  candidate-retrieval-worker:
+    build: ./backend
+    env_file:
+      - ./.env
+    environment:
+      - POSTGRES_DSN=${POSTGRES_DSN}
+      - REDIS_URL=${REDIS_URL}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS}
+      - KAFKA_CLIENT_ID=${KAFKA_CLIENT_ID}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET}
+      - PLAGCODE_LOG_LEVEL=INFO
+      - WORKER_GROUP_ID=candidate-retrieval-worker
+    command: ["python", "-m", "app.workers.candidate_retrieval_worker"]
+    depends_on:
+      - postgres
+      - kafka
+      - kafka-init
+    networks:
+      - plagcode-net
+
+  scoring-worker:
+    build: ./backend
+    env_file:
+      - ./.env
+    environment:
+      - POSTGRES_DSN=${POSTGRES_DSN}
+      - REDIS_URL=${REDIS_URL}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS}
+      - KAFKA_CLIENT_ID=${KAFKA_CLIENT_ID}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET}
+      - PLAGCODE_LOG_LEVEL=INFO
+      - WORKER_GROUP_ID=scoring-worker
+    command: ["python", "-m", "app.workers.scoring_worker"]
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+      - kafka-init
+    networks:
+      - plagcode-net
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      - ZOOKEEPER_CLIENT_PORT=2181
+      - ZOOKEEPER_TICK_TIME=2000
+    networks:
+      - plagcode-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=false
+    networks:
+      - plagcode-net
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - kafka
+    command:
+      [
+        "bash",
+        "-lc",
+        "echo 'Waiting for Kafka...'; cub kafka-ready -b kafka:9092 1 30; kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic code.submitted --partitions 6 --replication-factor 1; kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic code.normalized --partitions 6 --replication-factor 1; kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic code.candidates --partitions 12 --replication-factor 1; kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic code.scored --partitions 3 --replication-factor 1; kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic code.deadletter --partitions 3 --replication-factor 1; echo 'Kafka topics created.';"
+      ]
+    networks:
+      - plagcode-net
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - plagcode-net
+
+  postgres:
+    image: postgres:16-alpine
+    env_file:
+      - ./.env
+    environment:
+      - POSTGRES_DB=plagdb
+      - POSTGRES_USER=plag
+      - POSTGRES_PASSWORD=plag
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./backend/db/migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - plagcode-net
+
+  minio:
+    image: minio/minio:latest
+    env_file:
+      - ./.env
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY}
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - plagcode-net
+
+  minio-init:
+    image: alpine:3.20
+    depends_on:
+      - minio
+    env_file:
+      - ./.env
+    command:
+      [
+        "/bin/sh",
+        "-lc",
+        "set -e; echo 'Installing mc...'; apk add --no-cache curl ca-certificates; curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc; chmod +x /usr/local/bin/mc; echo 'Waiting for MinIO...'; until /usr/local/bin/mc alias set plagcode http://minio:9000 ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}; do sleep 1; done; /usr/local/bin/mc mb --ignore-existing plagcode/${MINIO_BUCKET}; echo 'MinIO bucket ensured.';"
+      ]
+    networks:
+      - plagcode-net
+
+  web:
+    build:
+      context: .
+      dockerfile: ./nginx/Dockerfile
+    ports:
+      - "8082:80"
+    depends_on:
+      - api
+    networks:
+      - plagcode-net
+
+volumes:
+  postgres-data:
+  minio-data:
+
+networks:
+  plagcode-net:
+    driver: bridge

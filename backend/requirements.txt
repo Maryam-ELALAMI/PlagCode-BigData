@@ -1,0 +1,12 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.20
+pydantic==2.10.4
+pydantic-settings==2.7.0
+orjson==3.10.12
+SQLAlchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+aiokafka==0.10.0
+redis==5.2.1
+minio==7.2.12
+tenacity==9.0.0
