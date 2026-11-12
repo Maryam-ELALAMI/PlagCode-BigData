@@ -1,321 +1,366 @@
-# PlagCode — Code Similarity Analysis
+<h1 align="center">PlagCode</h1>
 
-PlagCode is a Dockerized web application for comparing source files using token-based analysis and the Jaccard index. It combines a React interface, a FastAPI backend, and an event-driven processing architecture with Kafka and dedicated workers.
+<p align="center">
+  <b>Code similarity analysis: token-based comparison with a Jaccard baseline</b><br/>
+  Event-driven pipeline · React · FastAPI · Kafka · PostgreSQL · Docker Compose
+</p>
 
-PlagCode explores code similarity through lexical analysis with Jaccard. Planned extensions include structural and semantic comparison with reproducible evaluation.
+<p align="center">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-Python-009688?logo=fastapi&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/React-Vite-61DAFB?logo=react&logoColor=black">
+  <img alt="Kafka" src="https://img.shields.io/badge/Apache-Kafka-231F20?logo=apachekafka&logoColor=white">
+  <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white">
+  <img alt="Redis" src="https://img.shields.io/badge/Redis-DC382D?logo=redis&logoColor=white">
+  <img alt="MinIO" src="https://img.shields.io/badge/MinIO-S3-C72E49?logo=minio&logoColor=white">
+</p>
 
-> A similarity score is an indicator for human review, not proof of plagiarism or a probability that plagiarism occurred.
+PlagCode compares source files and presents their overlap as scores, tables and visualizations. The current engine is **lexical**: it measures how many distinct tokens two files share. Structural and semantic methods, together with a reproducible evaluation, are the next milestones (see [Roadmap](#roadmap)).
+
+> [!IMPORTANT]
+> A similarity score is a signal for **human review**. It is neither proof of plagiarism nor the probability that plagiarism occurred.
+
+<!-- Add a 30-second demo here once recorded: upload → scan → heatmap → side-by-side view.
+     ![PlagCode demo](docs/demo.gif) -->
+
+---
 
 ## Contents
 
-- [Features](#features)
-- [Architecture](#architecture)
-- [Project Layout](#project-layout)
-- [Requirements](#requirements)
-- [Quick Start](#quick-start)
-- [Usage and API](#usage-and-api)
-- [Similarity Method](#similarity-method)
-- [Evaluation and Validation](#evaluation-and-validation)
-- [Current Limitations](#current-limitations)
-- [Useful Commands](#useful-commands)
-- [Troubleshooting](#troubleshooting)
-- [Planned Improvements](#planned-improvements)
-- [Responsible Use](#responsible-use)
+1. [Features](#features)
+2. [Architecture](#architecture)
+3. [Quick start](#quick-start)
+4. [Usage and API](#usage-and-api)
+5. [Similarity method](#similarity-method)
+6. [Evaluation status](#evaluation-status)
+7. [Limitations](#limitations)
+8. [Operations](#operations)
+9. [Troubleshooting](#troubleshooting)
+10. [Roadmap](#roadmap)
+11. [Responsible use](#responsible-use)
+
+---
 
 ## Features
 
-- Upload multiple files and start a comparison scan.
-- Track scan status and progress through the application/API.
-- Compare token overlap and return pairwise similarity scores and labels.
-- Review results through tables, heatmaps, relationship graphs, and a side-by-side comparison interface.
-- Process scans asynchronously using Kafka and dedicated workers.
-- Persist scan metadata and results in PostgreSQL, and uploaded files and JSON reports in MinIO.
-- Run the application and its dependencies with Docker Compose.
+| Area | What it does |
+| --- | --- |
+| **Upload** | Upload multiple source files for comparison. Consult the backend and Nginx configuration for enforced upload limits. |
+| **Processing** | Asynchronous pipeline: normalization, pair generation, scoring. The API returns a scan ID immediately. |
+| **Scoring** | Deterministic Jaccard similarity on token sets for compared file pairs. |
+| **Results** | Pair table with search, filters and sorting; heatmap; relationship graph; side-by-side file view; JSON export. |
+| **Persistence** | Scan metadata and scores in PostgreSQL; original files and reports in MinIO. |
+| **Operations** | Scan history, processing logs and alerts; one-command startup with Docker Compose. |
+
+---
 
 ## Architecture
 
+### System overview
+
 ```mermaid
 flowchart TD
-    User["User"] --> Web["React frontend / Nginx"]
-    Web -->|"Upload, progress, results"| API["FastAPI"]
-    API -->|"Scan events"| Kafka["Kafka"]
+    U["User"] --> W["React frontend / Nginx"]
+    W -->|"Upload and retrieve results"| A["FastAPI"]
+    A --> K["Kafka"]
 
-    subgraph Processing["Asynchronous processing"]
-        Normalizer["Normalizer worker"]
-        Candidates["Candidate retrieval worker"]
-        Scoring["Scoring worker"]
-        Normalizer -.->|"Logical order"| Candidates
-        Candidates -.->|"Logical order"| Scoring
+    subgraph PIPE["Asynchronous processing"]
+        N["Normalizer worker"]
+        C["Candidate retrieval worker"]
+        S["Scoring worker"]
+        N -.-> C
+        C -.-> S
     end
 
-    Kafka <--> Normalizer
-    Kafka <--> Candidates
-    Kafka <--> Scoring
+    K <--> N
+    K <--> C
+    K <--> S
 
-    subgraph Storage["Storage services"]
-        Postgres["PostgreSQL: scans and results"]
-        MinIO["MinIO: files and reports"]
-        Redis["Redis: intermediate/cache storage"]
+    subgraph DATA["Storage services"]
+        PG["PostgreSQL: scans and results"]
+        MI["MinIO: files and reports"]
+        RE["Redis: cache"]
     end
 
-    API --> Postgres
-    API --> MinIO
-    Processing -.-> Storage
+    A --> PG
+    A --> MI
+    PIPE -.-> DATA
 ```
 
-The API accepts uploads and starts a scan. Kafka coordinates asynchronous
-processing across normalization, candidate retrieval, and scoring workers.
-The frontend queries the API to display progress and results.
+Dashed arrows show logical order and grouped storage access; stages communicate through Kafka.
+This is a conceptual overview of the Compose services.
 
-Dashed arrows show the logical processing order and grouped storage access;
-worker stages communicate through Kafka. The diagram is a conceptual overview
-of the Compose services, rather than an exhaustive map of runtime connections.
+### Scan lifecycle
+
+Submit files, follow the scan status, then retrieve the completed results.
+The local scan reached `DONE`; the complete state list and transition rules are defined by the backend implementation.
+
+### Services
 
 | Service | Responsibility |
 | --- | --- |
 | `web` | Nginx serves the frontend and proxies API requests. |
-| `api` | FastAPI receives uploads and exposes scan operations. |
-| `normalizer-worker` | Handles the normalization stage. |
-| `candidate-retrieval-worker` | Handles candidate-pair selection. |
-| `scoring-worker` | Computes similarity scores. |
-| `kafka` | Transports processing events between components. |
-| `zookeeper` | Supports the current Kafka deployment. |
-| `postgres` | Stores scan metadata, status, and results. |
-| `redis` | Provides fast intermediate/cache storage. |
-| `minio` | Stores uploaded objects and reports. |
-| `kafka-init` | Creates the required Kafka topics. |
-| `minio-init` | Ensures the upload bucket exists. |
+| `api` | FastAPI validates uploads, stores files and exposes scan operations. |
+| `normalizer-worker` | Normalizes sources and caches tokens. |
+| `candidate-retrieval-worker` | Generates the pairs to compare. |
+| `scoring-worker` | Computes similarity scores and stores results. |
+| `kafka`, `zookeeper` | Event transport between the API and the workers. |
+| `postgres` | Scans, metadata, scores and alerts. |
+| `redis` | Cache for normalized sources and tokens. |
+| `minio` | S3-compatible object storage. |
+| `kafka-init`, `minio-init` | One-shot jobs that create topics and the upload bucket. |
 
-Configured Kafka topics: `code.submitted`, `code.normalized`, `code.candidates`, `code.scored`, and `code.deadletter`.
+Kafka topics: `code.submitted`, `code.normalized`, `code.candidates`, `code.scored`, `code.deadletter`.
+All services share the `plagcode-net` network. Named volumes keep PostgreSQL and MinIO data across container replacement.
 
-Services communicate over the `plagcode-net` Docker network. Named volumes preserve PostgreSQL and MinIO data independently of container replacement.
-
-## Project Layout
-
-Key paths used by the current Docker configuration:
+### Project layout
 
 ```text
-backend/                  # FastAPI application and workers
-  app/                    # app.main and app.workers modules
-  db/migrations/          # PostgreSQL initialization scripts
-frontend/                 # React frontend
-nginx/Dockerfile          # Web image build
-docker-compose.yml        # Services, networking, and volumes
-.env.example              # Configuration template
+backend/
+├── app/                 # FastAPI application and workers
+└── db/migrations/       # PostgreSQL initialization scripts
+frontend/                # React frontend
+nginx/Dockerfile         # Web image build
+docker-compose.yml       # Services, networks, volumes
+.env.example             # Configuration template
 ```
 
-## Requirements
+---
 
-- Docker Desktop installed and running, with Linux containers enabled.
-- Docker Compose v2 (`docker compose`).
-- Internet access for the initial image downloads and builds.
+## Quick start
 
-## Quick Start
-
-Run commands from the directory containing `docker-compose.yml`.
-
-### 1. Configure the environment
-
-On Windows PowerShell:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-On Linux/macOS:
+**Requirements:** Docker Desktop running with Linux containers, Docker Compose v2, and internet access for the first build.
 
 ```bash
-cp .env.example .env
-```
+# 1. Create your configuration (do not overwrite an existing .env)
+cp .env.example .env          # PowerShell: Copy-Item .env.example .env
 
-Run this copy only when creating your configuration; do not overwrite an existing customized `.env`.
-
-Check the database, Kafka, Redis, and MinIO settings. Container-to-container connections use service names, for example `kafka:9092`, `redis:6379`, and `minio:9000`.
-
-Keep `.env` and real credentials out of version control. The current Compose configuration explicitly sets local PostgreSQL credentials; changing `.env` alone does not override those entries. Database initialization scripts run when the PostgreSQL data directory is first initialized.
-
-### 2. Build and start
-
-```bash
+# 2. Build and start
 docker compose up -d --build
-```
 
-### 3. Check service status
-
-```bash
+# 3. Check status
 docker compose ps -a
 ```
 
-- Long-running services should be `Up`.
-- PostgreSQL and Redis should be `Up (healthy)`.
-- `kafka-init` and `minio-init` should finish with `Exited (0)`.
+Expected state:
 
-### 4. Open the application
+- Long-running services are `Up`; PostgreSQL and Redis are `Up (healthy)`.
+- `kafka-init` and `minio-init` end with `Exited (0)`.
 
-| Endpoint | Local address |
+| Endpoint | Address |
 | --- | --- |
-| Frontend | http://localhost:8082 |
+| Application | http://localhost:8082 |
 | API documentation | http://localhost:8001/docs |
 | MinIO S3 API | http://localhost:19000 |
 | PostgreSQL | `localhost:5432` |
 
-These addresses assume the updated MinIO mapping `127.0.0.1:19000:9000`. The MinIO console listens on port `9001` inside its container but is not published by the current configuration.
+> [!NOTE]
+> Keep `.env` and real credentials out of version control. The Compose file sets local PostgreSQL credentials explicitly, so changing `.env` alone does not override them. Database initialization scripts run only when the PostgreSQL data directory is first created. The MinIO console is not published by default.
+
+---
 
 ## Usage and API
 
-1. Open the frontend and upload at least two files.
-2. Start a scan and follow its progress.
-3. Wait for completion before interpreting results.
-4. Review pairwise scores and visualizations, then inspect the source files.
+1. Open the application and upload at least two files.
+2. Start the scan and follow its progress.
+3. Wait for `DONE` before interpreting results.
+4. Review scores and visualizations, then inspect the source files side by side.
 
-### API entry points
-
-| Method | Path | Purpose |
+| Method | Route | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/scan` | Submit files as multipart form data and receive a scan identifier. |
-| `GET` | `/docs` | Open the interactive API reference, including status and results operations. |
+| `POST` | `/api/scan` | Upload files and create a scan |
+| `GET` | `/docs` | Interactive API documentation |
 
-### Submit a scan through the API
+Use the returned `scanId` with the status and results operations listed in `/docs`.
 
-PowerShell example using the curl executable:
+**Submit a scan**
 
-```powershell
-curl.exe -X POST "http://localhost:8001/api/scan" -F "files=@samples/a.py" -F "files=@samples/b.py"
+```bash
+curl -X POST "http://localhost:8001/api/scan" \
+  -F "files=@samples/a.py" \
+  -F "files=@samples/b.py"
 ```
 
-Replace the example paths with files that exist on your computer.
+```json
+{ "scanId": "ceabb136-96fe-402c-bc15-fd4647def224", "message": "Scan started" }
+```
 
-Example response:
+On Windows PowerShell, use `curl.exe` and place the command on one line. Replace the sample paths with existing files.
+
+This acknowledges submission, not completion.
+
+**Illustrative response**
+
+The following values illustrate the response structure; they are not a measured scan result. The example label does not define category boundaries.
 
 ```json
 {
-  "scanId": "ceabb136-96fe-402c-bc15-fd4647def224",
-  "message": "Scan started"
+  "meta": { "n_files": 2, "n_pairs": 1, "runtime_ms": 0 },
+  "pairs": [
+    {
+      "file_a": "alice.py",
+      "file_b": "bilal.py",
+      "similarity": 60.0,
+      "label": "medium",
+      "overlap_spans": []
+    }
+  ]
 }
 ```
 
-This acknowledges submission, not completion. Use the status and results operations documented in `/docs` with the returned scan identifier.
+A local scan returned `runtime_ms: 0` and `overlap_spans: []`. These observations do not establish whether timing or segment extraction is implemented (see [Limitations](#limitations)).
 
-## Similarity Method
+---
 
-The current baseline compares sets of tokens using the Jaccard index:
+## Similarity method
 
-```text
-J(A, B) = |A intersection B| / |A union B|
-```
+For two files, let $A$ and $B$ be their sets of distinct tokens. PlagCode computes the **Jaccard index**:
 
-Here, A and B are token sets extracted from the two inputs. The API presents similarity on a percentage scale.
+$$
+J(A, B) = \frac{|A \cap B|}{|A \cup B|}
+$$
 
-For example, consider these simplified token sets:
+and reports it as a percentage:
 
-- A = `{read, parse, compare, report}`
-- B = `{read, parse, compare, save}`
-- Intersection: 3 tokens; union: 5 tokens.
-- Jaccard similarity: `3 / 5 × 100 = 60%`.
+$$
+\text{similarity}(A, B) = 100 \times J(A, B)
+$$
 
-This is an illustrative set calculation, not an output from the tokenizer.
-The method is deterministic for fixed inputs and preprocessing. It measures
-lexical overlap rather than semantic equivalence or authorship.
+**Worked example** (illustrative sets, not tokenizer output)
 
-## Evaluation and Validation
+$$
+A = \{\text{read}, \text{parse}, \text{compare}, \text{report}\}, \qquad
+B = \{\text{read}, \text{parse}, \text{compare}, \text{save}\}
+$$
 
-### Current local checks
+$$
+|A \cap B| = 3, \qquad |A \cup B| = 5, \qquad
+\text{similarity} = \frac{3}{5} \times 100 = 60\,\%
+$$
 
-- PostgreSQL and Redis passed their configured health checks.
-- Kafka and MinIO initialization jobs completed with exit code `0`.
-- A two-file notebook submission returned a scan identifier, reached `DONE`, and produced one pairwise result.
+**Exhaustive comparison count.** Comparing every distinct pair would require:
 
-These are manual smoke checks. Automated test results and benchmark metrics
-are not reported in this README.
+$$
+\text{pairs}(n) = \binom{n}{2} = \frac{n(n-1)}{2}
+$$
+
+so 2 files give 1 pair and 50 files give 1 225 pairs. This describes exhaustive comparison, not a verified candidate-selection strategy.
+
+**Display categories**
+
+Results can carry labels such as `low`, `medium`, and `high`. Exact thresholds and boundary conditions should be taken from the current scoring implementation; no benchmark-calibrated thresholds are reported here.
+
+**Properties.** The method is deterministic for fixed inputs and preprocessing. It ignores token order and frequency, so two programs with different behavior can share many tokens. Empty-input behavior depends on the implementation and is not specified here.
+
+---
+
+## Evaluation status
+
+### Checks performed so far
+
+- PostgreSQL and Redis pass their health checks.
+- Kafka and MinIO initialization jobs exit with code `0`.
+- A two-file notebook scan returned a scan ID, reached `DONE` and produced one pairwise result.
+
+These are manual smoke checks. No benchmark metrics are reported yet.
 
 ### Planned evaluation
 
-The first evaluation milestone is a reproducible comparison against labeled
-pairs, including exact copies, formatting changes, identifier renaming, and
-unrelated examples. Source files and their transformed variants will stay in
-the same split to avoid leakage between training, validation, and test data.
+The first milestone is a reproducible comparison on labeled pairs: exact copies, formatting changes, identifier renaming and unrelated files. A source file and its transformed variants stay in the same split, which prevents leakage between training, validation and test data.
 
-The report will include precision, recall, F1, threshold selection on validation
-data, and results on a held-out test set. No accuracy claims are made before
-this evaluation is completed.
+The report will give precision, recall and F1, thresholds chosen on validation data, and results on a held-out test set. No accuracy claim is made before this evaluation is complete.
 
-## Current Limitations
+---
 
-- **Lexical scope:** token sets discard order and frequency. Renaming and shared boilerplate can affect scores.
-- **Thresholds:** similarity categories are heuristic; benchmark calibration is planned.
-- **Matching segments:** the observed result contained `overlap_spans: []`; precise line highlighting is not demonstrated.
-- **Timing:** the observed result contained `runtime_ms: 0`; performance measurements are not reported.
-- **Notebooks:** upload and scan completion were observed. Code-cell-only extraction is not established by that test.
-- **Deployment:** the supplied configuration targets local development. Public deployment requires a review of authentication, credentials, and upload controls.
+## Limitations
 
-## Useful Commands
+| Topic | Current state |
+| --- | --- |
+| **Lexical scope** | Token sets discard order and frequency; renaming and shared boilerplate affect scores. |
+| **Language handling** | Supported formats and language-specific preprocessing need to be established from the implementation. |
+| **Thresholds** | Categories are heuristic; calibration is planned. |
+| **Matching segments** | The observed result contained `overlap_spans: []`; precise line highlighting is not demonstrated. |
+| **Timing** | The observed result contained `runtime_ms: 0`; no performance figures are reported. |
+| **Notebooks** | Upload and scan completion were observed. Code-cell-only extraction is not established by that test. |
+| **Scale** | Candidate-selection behavior and scalability have not been benchmarked. |
+| **Scope** | The documented workflow compares uploaded files within a scan; internet search is not demonstrated. |
+| **Security** | The configuration targets local development; authentication, roles, and upload controls require review before public deployment. |
+
+---
+
+## Operations
 
 ```bash
-# Start existing services
-docker compose up -d
-
-# Rebuild after application/image changes
-docker compose up -d --build
-
-# Include stopped and initialization containers
-docker compose ps -a
-
-# Follow processing logs
+docker compose up -d                 # start existing services
+docker compose up -d --build         # rebuild after changes
+docker compose ps -a                 # include stopped and init containers
 docker compose logs -f --tail=100 api normalizer-worker candidate-retrieval-worker scoring-worker
-
-# Inspect initialization logs
 docker compose logs --tail=50 kafka-init minio-init
-
-# Observe resource usage
-docker stats
-
-# Stop without removing containers
-docker compose stop
-
-# Stop and remove project containers and networks; keep named volumes
-docker compose down
+docker stats                         # resource usage
+docker compose stop                  # stop, keep containers
+docker compose down                  # remove containers and networks, keep volumes
 ```
 
-`Ctrl+C` exits log streaming without stopping services. Avoid `docker compose down -v` unless you intend to delete the project volumes and their stored data.
+`Ctrl+C` stops log streaming without stopping services. Avoid `docker compose down -v` unless you intend to delete stored data.
+
+---
 
 ## Troubleshooting
 
-### Port 9000 is unavailable
+<details>
+<summary><b>Port 9000 is unavailable</b></summary>
 
-Publish MinIO on a different host port:
+Publish MinIO on another host port and keep internal connections on `minio:9000`:
 
 ```yaml
 ports:
   - "127.0.0.1:19000:9000"
 ```
 
-Keep internal connections on `minio:9000`, then apply the change with `docker compose up -d`.
+Then run `docker compose up -d`.
+</details>
 
-### MinIO initialization never finishes
+<details>
+<summary><b>MinIO initialization never finishes</b></summary>
 
 ```bash
 docker compose logs --tail=80 minio-init minio
 ```
 
-The updated initialization service uses `pgsty/mc:RELEASE.2026-11-09T00-00-00Z`, with a shell entrypoint and bounded connection retries.
+A successful run ends with `MinIO bucket ensured.` and exit code `0`.
+</details>
 
-Successful initialization ends with `MinIO bucket ensured.` and exit code `0`.
+<details>
+<summary><b>API or workers stay in the Created state</b></summary>
 
-### API or workers remain in Created state
+Run `docker compose ps -a`, inspect the logs of the failed dependency, fix it, then rerun `docker compose up -d`.
+</details>
 
-Check dependent services and initialization jobs with `docker compose ps -a`, then inspect their logs. Fix the failed dependency and rerun `docker compose up -d`.
+<details>
+<summary><b>A worker restarts in a loop</b></summary>
 
-## Planned Improvements
+```bash
+docker compose logs --tail=80 api normalizer-worker candidate-retrieval-worker scoring-worker
+```
 
-The following items are roadmap goals, not current capabilities:
+Initialization services showing `Exited (0)` are normal; a restarting worker needs a log review.
+</details>
 
-- Reproducible evaluation datasets, precision/recall/F1, and validated thresholds.
-- Comparison of lexical, structural, and embedding-based approaches.
-- Matching-segment extraction and source highlighting.
-- Measured processing duration and scalability benchmarks.
-- Integration tests covering storage and event processing.
-- Optional ML models and LLM explanations, evaluated before adoption.
+---
 
-## Responsible Use
+## Roadmap
 
-Use PlagCode to identify similarities for investigation and discussion. Shared templates, common algorithms, and short files can produce misleading scores. Human review and contextual evidence are required before drawing conclusions about plagiarism.
+Planned work, not current capabilities.
+
+- [ ] Labeled benchmark with precision, recall, F1 and validated thresholds
+- [ ] Comparison of lexical, structural (AST) and embedding-based methods
+- [ ] Matching-segment extraction with side-by-side highlighting
+- [ ] Measured processing time and scalability benchmarks
+- [ ] Integration tests covering storage and event processing
+- [ ] Optional ML models and LLM-based explanations, evaluated before adoption
+
+---
+
+## Responsible use
+
+Use PlagCode to find similarities worth investigating and discussing. Shared templates, common algorithms and short files can produce misleading scores. Human review and contextual evidence are required before drawing any conclusion about plagiarism.
