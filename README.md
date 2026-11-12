@@ -20,6 +20,44 @@ File acceptance does not guarantee language-aware parsing. Notebook uploads have
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    User["User"] --> Web["React frontend / Nginx"]
+    Web -->|"Upload, progress, results"| API["FastAPI"]
+    API -->|"Scan events"| Kafka["Kafka"]
+
+    subgraph Processing["Asynchronous processing"]
+        Normalizer["Normalizer worker"]
+        Candidates["Candidate retrieval worker"]
+        Scoring["Scoring worker"]
+        Normalizer -.->|"Logical order"| Candidates
+        Candidates -.->|"Logical order"| Scoring
+    end
+
+    Kafka <--> Normalizer
+    Kafka <--> Candidates
+    Kafka <--> Scoring
+
+    subgraph Storage["Storage services"]
+        Postgres["PostgreSQL: scans and results"]
+        MinIO["MinIO: files and reports"]
+        Redis["Redis: intermediate/cache storage"]
+    end
+
+    API --> Postgres
+    API --> MinIO
+    Processing -.-> Storage
+```
+
+The API accepts uploads and starts a scan. Kafka coordinates asynchronous
+processing across normalization, candidate retrieval, and scoring workers.
+The frontend queries the API to display progress and results.
+
+Dashed arrows show the logical processing order and grouped storage access;
+worker stages communicate through Kafka. This overview reflects the intended
+architecture in the Compose configuration. Exact event routing and per-worker
+storage access remain to be verified against the implementation.
+
 | Service | Responsibility |
 | --- | --- |
 | `web` | Nginx serves the frontend and proxies API requests. |
