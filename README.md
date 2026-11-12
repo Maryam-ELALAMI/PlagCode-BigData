@@ -2,9 +2,25 @@
 
 PlagCode is a Dockerized web application for comparing source files using token-based analysis and the Jaccard index. It combines a React interface, a FastAPI backend, and an event-driven processing architecture with Kafka and dedicated workers.
 
-The project demonstrates software and data engineering applied to code similarity. The current analysis is lexical; machine learning and semantic comparison are planned improvements.
+PlagCode explores code similarity through lexical analysis with Jaccard. Planned extensions include structural and semantic comparison with reproducible evaluation.
 
 > A similarity score is an indicator for human review, not proof of plagiarism or a probability that plagiarism occurred.
+
+## Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Project Layout](#project-layout)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start)
+- [Usage and API](#usage-and-api)
+- [Similarity Method](#similarity-method)
+- [Evaluation and Validation](#evaluation-and-validation)
+- [Current Limitations](#current-limitations)
+- [Useful Commands](#useful-commands)
+- [Troubleshooting](#troubleshooting)
+- [Planned Improvements](#planned-improvements)
+- [Responsible Use](#responsible-use)
 
 ## Features
 
@@ -15,8 +31,6 @@ The project demonstrates software and data engineering applied to code similarit
 - Process scans asynchronously using Kafka and dedicated workers.
 - Persist scan metadata and results in PostgreSQL, and uploaded files and JSON reports in MinIO.
 - Run the application and its dependencies with Docker Compose.
-
-File acceptance does not guarantee language-aware parsing. Notebook uploads have been accepted in a local scan, but extraction of code cells and exclusion of notebook metadata still need verification.
 
 ## Architecture
 
@@ -54,9 +68,8 @@ processing across normalization, candidate retrieval, and scoring workers.
 The frontend queries the API to display progress and results.
 
 Dashed arrows show the logical processing order and grouped storage access;
-worker stages communicate through Kafka. This overview reflects the intended
-architecture in the Compose configuration. Exact event routing and per-worker
-storage access remain to be verified against the implementation.
+worker stages communicate through Kafka. The diagram is a conceptual overview
+of the Compose services, rather than an exhaustive map of runtime connections.
 
 | Service | Responsibility |
 | --- | --- |
@@ -136,7 +149,6 @@ docker compose ps -a
 - Long-running services should be `Up`.
 - PostgreSQL and Redis should be `Up (healthy)`.
 - `kafka-init` and `minio-init` should finish with `Exited (0)`.
-- A running process does not by itself verify successful end-to-end processing.
 
 ### 4. Open the application
 
@@ -149,12 +161,19 @@ docker compose ps -a
 
 These addresses assume the updated MinIO mapping `127.0.0.1:19000:9000`. The MinIO console listens on port `9001` inside its container but is not published by the current configuration.
 
-## Usage
+## Usage and API
 
 1. Open the frontend and upload at least two files.
 2. Start a scan and follow its progress.
 3. Wait for completion before interpreting results.
 4. Review pairwise scores and visualizations, then inspect the source files.
+
+### API entry points
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/scan` | Submit files as multipart form data and receive a scan identifier. |
+| `GET` | `/docs` | Open the interactive API reference, including status and results operations. |
 
 ### Submit a scan through the API
 
@@ -187,19 +206,47 @@ J(A, B) = |A intersection B| / |A union B|
 
 Here, A and B are token sets extracted from the two inputs. The API presents similarity on a percentage scale.
 
-This method is deterministic for a fixed preprocessing implementation and input. It measures lexical overlap; it does not establish semantic equivalence, authorship, or intent.
+For example, consider these simplified token sets:
+
+- A = `{read, parse, compare, report}`
+- B = `{read, parse, compare, save}`
+- Intersection: 3 tokens; union: 5 tokens.
+- Jaccard similarity: `3 / 5 × 100 = 60%`.
+
+This is an illustrative set calculation, not an output from the tokenizer.
+The method is deterministic for fixed inputs and preprocessing. It measures
+lexical overlap rather than semantic equivalence or authorship.
+
+## Evaluation and Validation
+
+### Current local checks
+
+- PostgreSQL and Redis passed their configured health checks.
+- Kafka and MinIO initialization jobs completed with exit code `0`.
+- A two-file notebook submission returned a scan identifier, reached `DONE`, and produced one pairwise result.
+
+These are manual smoke checks. Automated test results and benchmark metrics
+are not reported in this README.
+
+### Planned evaluation
+
+The first evaluation milestone is a reproducible comparison against labeled
+pairs, including exact copies, formatting changes, identifier renaming, and
+unrelated examples. Source files and their transformed variants will stay in
+the same split to avoid leakage between training, validation, and test data.
+
+The report will include precision, recall, F1, threshold selection on validation
+data, and results on a held-out test set. No accuracy claims are made before
+this evaluation is completed.
 
 ## Current Limitations
 
-- Token sets do not preserve token order or frequency.
-- Results depend on tokenization and normalization; identifier renaming and shared boilerplate can affect scores.
-- The current score thresholds and labels require benchmark-based validation.
-- A low score does not prove that two programs are unrelated.
-- A local result returned an empty `overlap_spans` list. Precise matching-line localization and highlighting are not yet validated.
-- A local result reported `runtime_ms: 0`; timing instrumentation needs verification before using that value for performance claims.
-- Notebook-specific extraction and language coverage require targeted tests.
-- Successful container startup and a completed scan do not independently prove that every infrastructure service was used as intended; integration tests remain necessary.
-- The supplied configuration is intended for local development. Review authentication, upload limits, secrets, and exposure before public deployment.
+- **Lexical scope:** token sets discard order and frequency. Renaming and shared boilerplate can affect scores.
+- **Thresholds:** similarity categories are heuristic; benchmark calibration is planned.
+- **Matching segments:** the observed result contained `overlap_spans: []`; precise line highlighting is not demonstrated.
+- **Timing:** the observed result contained `runtime_ms: 0`; performance measurements are not reported.
+- **Notebooks:** upload and scan completion were observed. Code-cell-only extraction is not established by that test.
+- **Deployment:** the supplied configuration targets local development. Public deployment requires a review of authentication, credentials, and upload controls.
 
 ## Useful Commands
 
@@ -250,7 +297,7 @@ Keep internal connections on `minio:9000`, then apply the change with `docker co
 docker compose logs --tail=80 minio-init minio
 ```
 
-The updated initialization service uses `pgsty/mc:RELEASE.2026-11-09T00-00-00Z`, with a shell entrypoint and bounded connection retries. It replaces the previous startup download that produced an invalid client file containing an HTTP `410` response.
+The updated initialization service uses `pgsty/mc:RELEASE.2026-11-09T00-00-00Z`, with a shell entrypoint and bounded connection retries.
 
 Successful initialization ends with `MinIO bucket ensured.` and exit code `0`.
 
